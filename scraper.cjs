@@ -4,96 +4,92 @@ const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 async function scrape() {
-  console.log("🚀 [SNIPER v26.0] INICIANDO VARREDURA PROFUNDA...");
+  console.log("🚀 [GLOBAL SNIPER v27.0] INICIANDO...");
   
   const browser = await puppeteer.launch({ 
     headless: "new", 
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--window-size=1366,768'] 
+    args: [
+      '--no-sandbox', 
+      '--disable-setuid-sandbox', 
+      '--lang=pt-BR,pt' // Força o Google a falar Português
+    ] 
   });
   const page = await browser.newPage();
-  await page.setViewport({ width: 1366, height: 768 });
+  await page.setExtraHTTPHeaders({ 'Accept-Language': 'pt-BR,pt;q=0.9' });
 
   const query = process.env.QUERIES || 'Dentistas em Pouso Alegre';
   const url = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
-  
-  console.log(`🔎 Alvo: ${query}`);
   
   try {
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 5000));
 
-    // Rola a lista para carregar os primeiros leads
-    console.log("📜 Carregando lista...");
+    // Carrega a lista
     await page.evaluate(() => {
-      const feed = document.querySelector('div[role="feed"]');
-      if (feed) feed.scrollBy(0, 3000);
+        const feed = document.querySelector('div[role="feed"]');
+        if (feed) feed.scrollBy(0, 5000);
     });
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 4000));
 
-    // Pega todos os links de "lugares" na lista
-    const leadLinks = await page.evaluate(() => {
+    const leads = await page.evaluate(() => {
       return Array.from(document.querySelectorAll('a.hfpxzc')).map(a => ({
         name: a.getAttribute('aria-label'),
         url: a.href
-      })).slice(0, 15); // Pega os 15 primeiros para ser rápido e preciso
+      })).slice(0, 20);
     });
 
-    console.log(`🎯 Alvos identificados: ${leadLinks.length}. Iniciando extração individual...`);
+    console.log(`🎯 Alvos: ${leads.length}`);
 
-    for (const lead of leadLinks) {
-      console.log(`🔭 Analisando: ${lead.name}...`);
-      
+    for (const lead of leads) {
+      console.log(`🔭 Extraindo: ${lead.name}...`);
       try {
-        // Clica no lead para abrir o painel lateral
         await page.goto(lead.url, { waitUntil: 'networkidle2', timeout: 30000 });
         await new Promise(r => setTimeout(r, 3000));
 
-        // Extrai dados do painel lateral (Lugar onde o Google não esconde)
-        const data = await page.evaluate(() => {
-          const name = document.querySelector('h1.fontHeadlineLarge')?.innerText || "";
+        const info = await page.evaluate(() => {
+          const fullText = document.body.innerText;
           
-          // Busca telefone pelo ícone ou pelo aria-label que começa com "Telefone"
-          const phoneBtn = document.querySelector('button[aria-label^="Telefone"]');
-          const phone = phoneBtn ? phoneBtn.getAttribute('aria-label').replace('Telefone: ', '').trim() : "";
+          // Tenta achar o botão de telefone por vários nomes (pt e en)
+          const phoneBtn = document.querySelector('button[aria-label*="Telefone"], button[aria-label*="Phone"], button[data-tooltip*="telefone"], button[data-item-id*="phone"]');
+          let phone = phoneBtn ? phoneBtn.getAttribute('aria-label').replace(/[^0-9\s-()]/g, '').trim() : "";
           
-          const websiteBtn = document.querySelector('a[aria-label^="Website"], a[aria-label^="Website"]');
+          // Se falhou, tenta REGEX no texto todo
+          if (!phone || phone.length < 8) {
+            const match = fullText.match(/\(?\d{2}\)?\s?\d{4,5}-?\d{4}/);
+            phone = match ? match[0] : "";
+          }
+
+          const websiteBtn = document.querySelector('a[aria-label*="Website"], a[aria-label*="website"], a[data-item-id*="authority"]');
           const website = websiteBtn ? websiteBtn.href : "";
           
-          const rating = document.querySelector('div.F7609b div.fontBodyMedium span[aria-hidden="true"]')?.innerText || "0";
-          
-          return { name, phone, website, rating: parseFloat(rating.replace(',', '.')) };
+          const rating = document.querySelector('span.ceNzR')?.innerText || "0";
+
+          return { phone, website, rating: parseFloat(rating.replace(',', '.')) };
         });
 
-        if (data.phone) {
-          console.log(`✅ Telefone capturado: ${data.phone}`);
-          
-          // Salva no Supabase
-          const { error } = await supabase.from('leads').upsert({
-            name: data.name || lead.name,
-            phone: data.phone,
-            website: data.website,
-            rating: data.rating,
-            category: query.split(' ')[0],
-            score: data.website ? 40 : 80,
+        if (info.phone) {
+          console.log(`✅ Sucesso: ${info.phone}`);
+          await supabase.from('leads').upsert({
+            name: lead.name,
+            phone: info.phone,
+            website: info.website,
+            rating: info.rating || 4.0,
+            category: "Prospecto",
+            score: info.website ? 40 : 80,
             upsell_stage: 0
           }, { onConflict: 'name' });
-
-          if (error) console.error("❌ Erro no Supabase:", error.message);
         } else {
-          console.log(`⚠️ Telefone não disponível para: ${lead.name}`);
+          console.log("❌ Telefone não encontrado.");
         }
-
       } catch (e) {
-        console.log(`🛑 Erro ao detalhar ${lead.name}: ${e.message}`);
+        console.log(`⚠️ Erro no lead: ${e.message}`);
       }
     }
-
-    console.log("🏁 VARREDURA SNIPER CONCLUÍDA!");
-    
   } catch (err) {
-    console.error("💥 ERRO CRÍTICO:", err.message);
+    console.error("💥 Erro Geral:", err.message);
   } finally {
     await browser.close();
+    console.log("🏁 FIM DA VARREDURA.");
   }
 }
 
