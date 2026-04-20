@@ -4,79 +4,94 @@ const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 async function scrape() {
-  console.log("🚀 [BLINDADO v20.0] INICIANDO VARREDURA...");
+  console.log("🚀 [SNIPER v26.0] INICIANDO VARREDURA PROFUNDA...");
   
-  // Teste de conexão imediato
-  const { data: test, error: testErr } = await supabase.from('leads').select('count', { count: 'exact', head: true });
-  if (testErr) {
-    console.error("❌ ERRO DE CONEXÃO COM SUPABASE:", testErr.message);
-    return;
-  }
-  console.log("✅ Conexão com Supabase estabelecida com sucesso.");
-
   const browser = await puppeteer.launch({ 
     headless: "new", 
-    args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--window-size=1366,768'] 
   });
-  
   const page = await browser.newPage();
+  await page.setViewport({ width: 1366, height: 768 });
+
   const query = process.env.QUERIES || 'Dentistas em Pouso Alegre';
   const url = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
   
-  console.log(`🔎 Buscando leads em: ${query}`);
+  console.log(`🔎 Alvo: ${query}`);
   
   try {
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
     await new Promise(r => setTimeout(r, 5000));
 
-    // Rolagem simplificada mas eficaz
-    await page.evaluate(async () => {
+    // Rola a lista para carregar os primeiros leads
+    console.log("📜 Carregando lista...");
+    await page.evaluate(() => {
       const feed = document.querySelector('div[role="feed"]');
-      if (feed) { feed.scrollBy(0, 5000); await new Promise(r => setTimeout(r, 3000)); }
+      if (feed) feed.scrollBy(0, 3000);
+    });
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Pega todos os links de "lugares" na lista
+    const leadLinks = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('a.hfpxzc')).map(a => ({
+        name: a.getAttribute('aria-label'),
+        url: a.href
+      })).slice(0, 15); // Pega os 15 primeiros para ser rápido e preciso
     });
 
-    const leads = await page.evaluate(() => {
-      const blocks = document.querySelectorAll('div.Nv2Y3c, div.Nv2Yp, [role="article"]');
-      return Array.from(blocks).map(el => {
-        const name = el.querySelector('.fontHeadlineSmall')?.innerText || el.querySelector('.qBF1Pd')?.innerText;
-        const website = el.querySelector('a[href*="http"]')?.href || "";
-        const phoneMatch = el.innerText.match(/\(?\d{2}\)?\s?\d{4,5}-?\d{4}/);
-        return { 
-          name: name || "", 
-          phone: phoneMatch ? phoneMatch[0] : "", 
-          website: website,
-          rating: 4.0, 
-          category: "Prospecto" 
-        };
-      }).filter(l => l.name && l.name.length > 2);
-    });
+    console.log(`🎯 Alvos identificados: ${leadLinks.length}. Iniciando extração individual...`);
 
-    console.log(`📊 Total de leads identificados: ${leads.length}`);
+    for (const lead of leadLinks) {
+      console.log(`🔭 Analisando: ${lead.name}...`);
+      
+      try {
+        // Clica no lead para abrir o painel lateral
+        await page.goto(lead.url, { waitUntil: 'networkidle2', timeout: 30000 });
+        await new Promise(r => setTimeout(r, 3000));
 
-    // SALVAMENTO UM POR UM COM LOG DE ERRO
-    let salvos = 0;
-    for (const lead of leads) {
-      const { error } = await supabase.from('leads').upsert({
-        name: lead.name,
-        phone: lead.phone,
-        website: lead.website,
-        rating: lead.rating,
-        category: lead.category,
-        score: lead.website ? 40 : 80,
-        upsell_stage: 0
-      }, { onConflict: 'name' });
+        // Extrai dados do painel lateral (Lugar onde o Google não esconde)
+        const data = await page.evaluate(() => {
+          const name = document.querySelector('h1.fontHeadlineLarge')?.innerText || "";
+          
+          // Busca telefone pelo ícone ou pelo aria-label que começa com "Telefone"
+          const phoneBtn = document.querySelector('button[aria-label^="Telefone"]');
+          const phone = phoneBtn ? phoneBtn.getAttribute('aria-label').replace('Telefone: ', '').trim() : "";
+          
+          const websiteBtn = document.querySelector('a[aria-label^="Website"], a[aria-label^="Website"]');
+          const website = websiteBtn ? websiteBtn.href : "";
+          
+          const rating = document.querySelector('div.F7609b div.fontBodyMedium span[aria-hidden="true"]')?.innerText || "0";
+          
+          return { name, phone, website, rating: parseFloat(rating.replace(',', '.')) };
+        });
 
-      if (error) {
-        console.log(`⚠️ Falha ao salvar lead [${lead.name}]: ${error.message}`);
-      } else {
-        salvos++;
+        if (data.phone) {
+          console.log(`✅ Telefone capturado: ${data.phone}`);
+          
+          // Salva no Supabase
+          const { error } = await supabase.from('leads').upsert({
+            name: data.name || lead.name,
+            phone: data.phone,
+            website: data.website,
+            rating: data.rating,
+            category: query.split(' ')[0],
+            score: data.website ? 40 : 80,
+            upsell_stage: 0
+          }, { onConflict: 'name' });
+
+          if (error) console.error("❌ Erro no Supabase:", error.message);
+        } else {
+          console.log(`⚠️ Telefone não disponível para: ${lead.name}`);
+        }
+
+      } catch (e) {
+        console.log(`🛑 Erro ao detalhar ${lead.name}: ${e.message}`);
       }
     }
 
-    console.log(`✅ Varredura concluída! ${salvos} leads foram salvos/atualizados no banco.`);
+    console.log("🏁 VARREDURA SNIPER CONCLUÍDA!");
     
   } catch (err) {
-    console.error("💥 ERRO NO PROCESSO:", err.message);
+    console.error("💥 ERRO CRÍTICO:", err.message);
   } finally {
     await browser.close();
   }
