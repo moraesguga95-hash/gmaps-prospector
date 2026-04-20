@@ -1,0 +1,29 @@
+name: Google Maps Scraper Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      queries:
+        description: 'Termos de busca (ex: Dentistas Pouso Alegre)'
+        required: true
+        default: 'Dentistas em Pouso Alegre'
+  schedule:
+    - cron: '0 12 * * *' # Roda todo dia às 12:00 UTC (09:00 Horário de Brasília)
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      - name: Install Dependencies
+        run: npm install puppeteer @supabase/supabase-js
+      - name: Run Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          QUERIES: ${{ github.event.inputs.queries || 'Restaurantes em Pouso Alegre' }}
+        run: node scraper.cjs
