@@ -4,7 +4,7 @@ const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 async function scrape() {
-  console.log("🚀 [GOD'S EYE v35.0] INICIANDO DIAGNÓSTICO FINAL...");
+  console.log("🚀 [GHOST MESSENGER v44.0] INICIANDO OPERAÇÃO FANTASMA...");
   
   const browser = await puppeteer.launch({ 
     headless: "new", 
@@ -15,6 +15,7 @@ async function scrape() {
   const auditor = await browser.newPage();
 
   const queries = (process.env.QUERIES || 'Pizzarias em Pouso Alegre').split(',');
+  const webhookUrl = process.env.WEBHOOK_URL; // URL PARA DISPARO AUTOMÁTICO
 
   for (const query of queries) {
     const target = query.trim();
@@ -25,7 +26,6 @@ async function scrape() {
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
       await new Promise(r => setTimeout(r, 5000));
 
-      // Rolagem profunda
       await page.evaluate(async () => {
           const feed = document.querySelector('div[role="feed"]');
           if (feed) { for(let i=0; i<8; i++) { feed.scrollBy(0, 2000); await new Promise(r => setTimeout(r, 1000)); } }
@@ -47,15 +47,7 @@ async function scrape() {
             const website = document.querySelector('a[aria-label*="Website"], a[aria-label*="website"]')?.href || "";
             const ratingStr = document.querySelector('span.ceNzR')?.innerText || "4.0";
             const reviewStr = document.querySelector('span[aria-label*="avalia"]')?.innerText.replace(/[^0-9]/g, '') || "0";
-            const photoBtn = document.querySelector('button[aria-label*="Fotos"], button[aria-label*="Photos"]');
-            
-            return { 
-                phone, 
-                website, 
-                rating: parseFloat(ratingStr.replace(',', '.')), 
-                reviews: parseInt(reviewStr),
-                hasPhotos: !!photoBtn
-            };
+            return { phone, website, rating: parseFloat(ratingStr.replace(',', '.')), reviews: parseInt(reviewStr) };
           });
 
           let hasPixel = false;
@@ -72,32 +64,45 @@ async function scrape() {
           }
 
           if (info.phone) {
-            // Lógica de HEALTH SCORE (0-100)
+            const cleanPhone = info.phone.startsWith('55') ? info.phone : '55' + info.phone;
+            
+            // Lógica de Saúde
             let score = 100;
             if (!info.website) score -= 30;
             if (info.website && !hasPixel) score -= 20;
             if (loadTime > 3) score -= 15;
-            if (info.reviews < 15) score -= 20;
-            if (!info.hasPhotos) score -= 15;
-
-            await supabase.from('leads').upsert({
+            
+            const leadData = {
               name: lead.name,
-              phone: info.phone.startsWith('55') ? info.phone : '55' + info.phone,
+              phone: cleanPhone,
               website: info.website,
               rating: info.rating,
-              category: target.split(' ')[0],
-              score: score, // Agora o score é a Saúde Real
-              upsell_stage: 0,
+              category: target,
+              score: score,
               has_pixel: hasPixel,
-              has_ads: loadTime > 3,
-              owner_name: info.reviews < 10 ? "RECÉM-ABERTO" : "" 
-            }, { onConflict: 'name' });
+              has_ads: loadTime > 3
+            };
+
+            // 1. SALVA NO BANCO
+            await supabase.from('leads').upsert(leadData, { onConflict: 'name' });
+
+            // 2. DISPARO AUTOMÁTICO (O CORAÇÃO DA v44.0)
+            if (webhookUrl && score < 50) {
+              console.log(`📡 Enviando lead ${leadData.name} para DISPARO AUTOMÁTICO...`);
+              try {
+                // Import dinâmico do fetch se necessário ou use uma lib local
+                await fetch(webhookUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(leadData)
+                });
+              } catch (err) { console.log("⚠️ Erro no webhook, mas lead salvo."); }
+            }
           }
         } catch (e) {}
       }
     } catch (err) {}
   }
-
   await browser.close();
 }
 
