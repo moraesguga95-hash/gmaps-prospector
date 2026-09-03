@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
@@ -8,12 +8,17 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 const port = process.env.PORT || 3001;
 
-const supabaseUrl = 'https://pauyzimjlrjoncbvgkdh.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhdXl6aW1qbHJqb25jYnZna2RoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0NDI2NDksImV4cCI6MjA5MjAxODY0OX0.XUO9j9AYMcB4n-1DpFh5HGLAdah-rVv94BGE3KE7XBE';
-const supabase = createClient(supabaseUrl, supabaseKey);
+const requiredEnv = ['SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'SUPABASE_OWNER_USER_ID', 'APP_API_TOKEN'];
+const missingEnv = requiredEnv.filter((name) => !process.env[name]);
+if (missingEnv.length) throw new Error(`Variaveis obrigatorias ausentes: ${missingEnv.join(', ')}`);
 
-// CORS aberto para qualquer origem (Vercel, celular, etc.)
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'bypass-tunnel-reminder'] }));
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+const ownerUserId = process.env.SUPABASE_OWNER_USER_ID;
+
+// CORS restrito a origem configurada.
+app.use(cors({ origin: process.env.ALLOWED_ORIGIN || false, methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json());
 
 // Health check - para testar se o servidor está vivo
@@ -21,9 +26,15 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'online', timestamp: new Date().toISOString() });
 });
 
+app.use('/api', (req, res, next) => {
+  const token = req.get('authorization')?.replace(/^Bearer\s+/i, '');
+  if (token !== process.env.APP_API_TOKEN) return res.status(401).json({ error: 'Nao autorizado' });
+  next();
+});
+
 // Rota: Buscar leads do Supabase
 app.get('/api/leads', async (req, res) => {
-  const { data, error } = await supabase.from('leads').select('*').order('score', { ascending: false });
+  const { data, error } = await supabase.from('leads').select('*').eq('user_id', ownerUserId).order('score', { ascending: false });
   if (error) return res.status(500).json(error);
   res.json(data || []);
 });
@@ -36,7 +47,7 @@ app.post('/api/scrape', (req, res) => {
   console.log(`🚀 Iniciando varredura: ${query}`);
   res.json({ message: 'Varredura iniciada!', query });
 
-  exec(`node scraper.cjs "${query}"`, { cwd: __dirname }, async (error, stdout, stderr) => {
+  execFile(process.execPath, ['scraper.cjs'], { cwd: __dirname, env: { ...process.env, QUERIES: query } }, async (error, stdout, stderr) => {
     if (error) {
       console.error('❌ Erro no scraper:', error.message);
       return;
@@ -52,7 +63,7 @@ app.post('/api/scrape', (req, res) => {
         for (const lead of leads) {
           const { error: upsertErr } = await supabase
             .from('leads')
-            .upsert(lead, { onConflict: 'name' });
+            .upsert({ ...lead, user_id: ownerUserId }, { onConflict: 'user_id,name' });
           if (upsertErr) console.error('Erro upserting:', lead.name, upsertErr.message);
         }
         console.log('✅ Todos os leads sincronizados com o Supabase!');
@@ -66,7 +77,7 @@ app.post('/api/scrape', (req, res) => {
 // Rota: Atualizar Status
 app.post('/api/leads/update', async (req, res) => {
   const { name, status } = req.body;
-  const { error } = await supabase.from('leads').update({ status }).eq('name', name);
+  const { error } = await supabase.from('leads').update({ status }).eq('user_id', ownerUserId).eq('name', name);
   if (error) return res.status(500).json(error);
   res.json({ success: true });
 });

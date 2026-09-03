@@ -1,7 +1,16 @@
 const puppeteer = require('puppeteer');
 const { createClient } = require('@supabase/supabase-js');
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const requiredEnv = ['SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'SUPABASE_OWNER_USER_ID'];
+const missingEnv = requiredEnv.filter((name) => !process.env[name]);
+if (missingEnv.length) {
+  throw new Error(`Variaveis obrigatorias ausentes: ${missingEnv.join(', ')}`);
+}
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+const ownerUserId = process.env.SUPABASE_OWNER_USER_ID;
 
 async function scrape() {
   console.log("🚀 [GHOST MESSENGER v44.0] INICIANDO OPERAÇÃO FANTASMA...");
@@ -73,6 +82,7 @@ async function scrape() {
             if (loadTime > 3) score -= 15;
             
             const leadData = {
+              user_id: ownerUserId,
               name: lead.name,
               phone: cleanPhone,
               website: info.website,
@@ -84,7 +94,10 @@ async function scrape() {
             };
 
             // 1. SALVA NO BANCO
-            await supabase.from('leads').upsert(leadData, { onConflict: 'name' });
+            const { error: upsertError } = await supabase
+              .from('leads')
+              .upsert(leadData, { onConflict: 'user_id,name' });
+            if (upsertError) throw upsertError;
 
             // 2. DISPARO AUTOMÁTICO (O CORAÇÃO DA v44.0)
             if (webhookUrl && score < 50) {

@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { 
-  Zap, TrendingUp, Settings, MessageSquare, 
-  Share2, BrainCircuit, Loader2, DollarSign,
-  Target, Users, Search, Linkedin, Instagram, ArrowUpCircle, Award, Layout, Star,
-  Trash2, Send, CheckSquare, Image as ImageIcon
+  Zap, Settings, MessageSquare, Share2, BrainCircuit, Loader2, DollarSign,
+  Target, Users, ArrowUpCircle, Award, Layout, Star, Trash2, Send, Image as ImageIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from './supabase';
@@ -31,6 +30,11 @@ const App = () => {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [isBotRunning, setIsBotRunning] = useState(false);
   const [showMockup, setShowMockup] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
   
   // Settings & Automation
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('gemini_key') || '');
@@ -42,13 +46,39 @@ const App = () => {
   const [aiData, setAiData] = useState({ script: '', loss: '', ads: '', reputation: '', owner: '' });
   const [loadingAi, setLoadingAi] = useState(false);
 
-  // ===== DATA FETCHING =====
-  const fetchData = async () => {
-    if (!supabase) return;
-    const { data } = await (supabase as any).from('leads').select('*').order('score', { ascending: false });
-    if (data) setLeads(data);
+  // ===== AUTH + DATA FETCHING =====
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const fetchData = useCallback(async () => {
+    if (!session) return;
+    const { data, error } = await supabase.from('leads').select('*').order('score', { ascending: false });
+    if (error) console.error('Falha ao carregar leads:', error.message);
+    if (data) setLeads(data as Lead[]);
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    const initialLoad = setTimeout(fetchData, 0);
+    const interval = setInterval(fetchData, 15000);
+    return () => { clearTimeout(initialLoad); clearInterval(interval); };
+  }, [session, fetchData]);
+
+  const handleLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAuthError('');
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) setAuthError('Email ou senha invalidos.');
   };
-  useEffect(() => { fetchData(); const int = setInterval(fetchData, 15000); return () => clearInterval(int); }, []);
 
   // ===== CLOUD SCRAPER (FIXED) =====
   const handleScrape = async () => {
@@ -57,7 +87,7 @@ const App = () => {
     if (!githubToken) return alert("⚠️ Configure o Token GitHub no Setup primeiro!");
     setIsBotRunning(true);
     try {
-      const res = await fetch('https://api.github.com/repos/moraesguga95/gmaps-prospector/actions/workflows/scrape.yml/dispatches', {
+      const res = await fetch('https://api.github.com/repos/moraesguga95-hash/gmaps-prospector/actions/workflows/scrape.yml/dispatches', {
         method: 'POST', 
         headers: { 
           'Authorization': `Bearer ${githubToken.trim()}`, 
@@ -72,14 +102,14 @@ const App = () => {
         const err = await res.json().catch(() => ({}));
         alert(`❌ Erro: ${err.message || 'Verifique se o Token tem permissão de workflow.'}`);
       }
-    } catch (e) { alert("❌ Erro de conexão. Verifique seu Token GitHub."); }
+    } catch { alert("❌ Erro de conexão. Verifique seu Token GitHub."); }
     setTimeout(() => setIsBotRunning(false), 30000);
   };
 
   // ===== CLEAR DATABASE =====
   const handleClear = async () => {
     if (!window.confirm("⚠️ ATENÇÃO: Isso vai apagar TODOS os leads permanentemente. Continuar?")) return;
-    await (supabase as any).from('leads').delete().neq('id', 0);
+    await supabase.from('leads').delete().neq('id', 0);
     setLeads([]);
     setSelectedLeads([]);
     alert("🗑️ Banco limpo!");
@@ -120,7 +150,7 @@ Retorne APENAS um JSON válido com estas chaves:
     window.open(`https://api.whatsapp.com/send?phone=${cleanPhone}`);
     // Auto-update status to "Contatado" (stage 1) if still at 0
     if (lead.upsell_stage === 0 && supabase) {
-      await (supabase as any).from('leads').update({ upsell_stage: 1 }).eq('name', lead.name);
+      await supabase.from('leads').update({ upsell_stage: 1 }).eq('name', lead.name);
       fetchData();
     }
   };
@@ -149,6 +179,26 @@ Retorne APENAS um JSON válido com estas chaves:
     if (s === 2) return { text: 'Negociando', color: '#fbbf24' };
     return { text: 'Fechado', color: '#22c55e' };
   };
+
+  if (authLoading) {
+    return <div className="auth-screen"><Loader2 className="animate-spin" size={28} /></div>;
+  }
+
+  if (!session) {
+    return (
+      <div className="auth-screen">
+        <form className="auth-card" onSubmit={handleLogin}>
+          <Zap size={32} color="#6366f1" fill="#6366f1" />
+          <h1>Acesso ao Prospector</h1>
+          <p>Entre com seu usuario do Supabase para acessar seus leads.</p>
+          <input className="modal-input" type="email" autoComplete="email" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} required />
+          <input className="modal-input" type="password" autoComplete="current-password" placeholder="Senha" value={password} onChange={(event) => setPassword(event.target.value)} required />
+          {authError && <p className="auth-error">{authError}</p>}
+          <button className="action-btn" type="submit">Entrar</button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
@@ -181,6 +231,7 @@ Retorne APENAS um JSON válido com estas chaves:
             <p style={{color:'var(--text-dim)', fontSize:'0.85rem', marginTop:'4px'}}>{stats.total} leads | {stats.goldLeads} ouro | {stats.contacted} contatados</p>
           </div>
           <div className="flex gap-4">
+             <button className="btn-icon" onClick={() => supabase.auth.signOut()} title="Sair">Sair</button>
              <button className="btn-icon" onClick={fetchData} title="Atualizar"><RefreshCw size={16}/></button>
              <button className="btn-icon" onClick={handleClear} title="Limpar Banco" style={{color:'#f87171'}}><Trash2 size={16}/></button>
              <button className="action-btn" onClick={handleScrape} disabled={isBotRunning}>
@@ -430,7 +481,7 @@ Retorne APENAS um JSON válido com estas chaves:
                            <button className="btn-icon" onClick={() => setShowMockup(true)} title="Ver Mockup"><ImageIcon size={18}/></button>
                            <button className="btn-icon" onClick={async () => {
                               const n = (selectedLead.upsell_stage || 0) + 1;
-                              if(n <= 3) { await (supabase as any).from('leads').update({ upsell_stage: n }).eq('name', selectedLead.name); fetchData(); alert("🎉 Cliente evoluído na esteira!"); }
+                              if(n <= 3) { await supabase.from('leads').update({ upsell_stage: n }).eq('name', selectedLead.name); fetchData(); alert("🎉 Cliente evoluído na esteira!"); }
                            }} title="Evoluir"><ArrowUpCircle size={18}/></button>
                         </div>
                       </>

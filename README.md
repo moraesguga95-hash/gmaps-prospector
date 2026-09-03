@@ -1,73 +1,45 @@
-# React + TypeScript + Vite
+# Google Maps Prospector
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicacao React que exibe leads coletados pelo scraper do GitHub Actions. O acesso ao banco usa Supabase Auth e Row Level Security (RLS): cada usuario autenticado so pode acessar linhas cujo `user_id` seja o seu proprio ID.
 
-Currently, two official plugins are available:
+## Configuracao segura
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. No Supabase Auth, crie o usuario que acessara o painel e copie seu UUID.
+2. Execute `supabase/migrations/20260903000000_secure_leads_rls.sql` no projeto Supabase.
+3. Depois da migration, associe dados legados ao usuario pelo SQL Editor (substitua o UUID):
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```sql
+update public.leads
+set user_id = 'UUID-DO-USUARIO'
+where user_id is null;
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+4. Na Vercel, configure:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY` (pode ser exposta ao navegador; o RLS limita os dados)
+5. Nos secrets do GitHub Actions, configure:
+   - `SUPABASE_URL`
+   - `SUPABASE_SECRET_KEY` (somente server-side; nunca use prefixo `VITE_`)
+   - `SUPABASE_OWNER_USER_ID` (o UUID do usuario acima)
+6. Remova o secret antigo `SUPABASE_KEY` depois de confirmar que o workflow novo funciona.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Copie `.env.example` para `.env.local` no desenvolvimento e nunca versione valores reais.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Validacao
+
+```bash
+npm ci
+npm run lint
+npm run build
 ```
+
+Para verificar a conexao server-side, configure as tres variaveis `SUPABASE_*` e execute `node check-db.cjs`. No Supabase, use o RLS Tester para confirmar que:
+
+- `anon` nao le, insere, altera ou apaga leads;
+- um usuario autenticado acessa apenas seu proprio `user_id`;
+- alterar `user_id` durante um update e bloqueado;
+- o scraper cria registros com `SUPABASE_OWNER_USER_ID`.
+
+## Modelo de seguranca
+
+O frontend usa apenas a chave publishable e a sessao do usuario. O scraper e o servidor auxiliar usam a chave secret exclusivamente em ambientes controlados. A chave secret ignora RLS, portanto todas as operacoes server-side tambem filtram ou preenchem explicitamente `user_id`.
